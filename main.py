@@ -1,14 +1,18 @@
 import os
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from playwright._impl._errors import TimeoutError
-
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+ 
 load_dotenv()
-
+ 
 LOGIN_EMAIL = os.getenv('LOGIN_EMAIL')
 LOGIN_PASSWORD = os.getenv('LOGIN_PASSWORD')
 SMTP_SERVER = os.getenv('SMTP_SERVER')
@@ -16,7 +20,7 @@ SMTP_PORT = int(os.getenv('SMTP_PORT'))
 SENDER_EMAIL = os.getenv('SENDER_EMAIL')
 SENDER_PASSWORD = os.getenv('SENDER_PASSWORD')
 RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL')
-
+ 
 def send_email(subject, body):
     server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
     server.starttls()
@@ -31,54 +35,68 @@ def send_email(subject, body):
     
     server.sendmail(SENDER_EMAIL, RECIPIENT_EMAIL, msg.as_string())
     server.quit()
-
+ 
 def login_and_extract_content():
-    retries = 3 
+    retries = 3
     for attempt in range(1, retries + 1):
-        with sync_playwright() as p:
-            # browser = p.chromium.launch(headless=False, slow_mo=50)
-            browser = p.chromium.launch(headless=True, slow_mo=50)
-            page = browser.new_page()
-
-            try:
-                page.goto('https://tpo.vierp.in/')
-
-                page.wait_for_load_state('networkidle')
-                
-                page.fill('input#input-15', LOGIN_EMAIL)
-                page.fill('input#input-18', LOGIN_PASSWORD)
-                
-                page.click('button.logi')
-                
-                page.wait_for_load_state('networkidle')
-
-                #login failure notification
-                # if page.url != 'https://tpo.vierp.in/home':
-                #     send_email(subject='TPONotifier - Login Failure', body='Failed to login to the website')
-                #     return None
-                
-                desired_url = 'https://tpo.vierp.in/apply_company'
-                page.goto(desired_url)
-                
-                page.wait_for_load_state('networkidle')
-                
-                full_html = page.content()
-
-                browser.close()
-                
-                return full_html
+        try:
+            # driver = webdriver.Chrome()
+ 
+            # chrome_options = Options()
+            # chrome_options.add_argument("--headless")
+ 
+            # driver = webdriver.Chrome(options=chrome_options)
+ 
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--single-process")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.binary_location = "/opt/chrome/chrome"  # path to headless chrome in the custom layer
+ 
+            driver_service = Service("/opt/chromedriver")  # path to chromedriver in the custom layer
+            driver = webdriver.Chrome(service=driver_service, options=chrome_options)
+ 
+            driver.get('https://tpo.vierp.in/')
+ 
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input#input-15')))
             
-            except TimeoutError:
-                if attempt == retries:
-                    send_email(subject='TPONotifier - Failed to list companies', body=f'Failed to navigate to the page after {retries} retries')
-                    return None
-                else:
-                    browser.close()
-                    print(f"Attempt {attempt}: Timeout occurred. Retrying...")
-            finally:
-                browser.close()
-
-def main():
+            email_input = driver.find_element(By.CSS_SELECTOR, 'input#input-15')
+            password_input = driver.find_element(By.CSS_SELECTOR, 'input#input-18')
+            login_button = driver.find_element(By.CSS_SELECTOR, 'button.logi')
+            
+            email_input.send_keys(LOGIN_EMAIL)
+            password_input.send_keys(LOGIN_PASSWORD)
+            login_button.click()
+ 
+            WebDriverWait(driver, 10).until(EC.url_to_be('https://tpo.vierp.in/home'))
+ 
+            driver.get('https://tpo.vierp.in/apply_company')
+ 
+            WebDriverWait(driver, 10).until(EC.url_to_be('https://tpo.vierp.in/apply_company'))
+ 
+            try:
+                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, 'v-card__title')))
+            except:
+                print("Timeout occurred while waiting for v-card__title elements to be present")
+                
+            html_content = driver.page_source
+ 
+            return html_content
+            
+        except Exception as e:
+            if attempt == retries:
+                send_email(subject='TPONotifier - Failed to list companies', body=f'Failed to navigate to the page after {retries} retries. Error: {str(e)}')
+                return None
+            else:
+                print(f"Attempt {attempt}: Error occurred. Retrying...")
+        finally:
+                if 'driver' in locals():
+                    driver.quit()
+ 
+def lambda_handler(event=None, context=None):
+# def main():
     html_content = login_and_extract_content()
     
     if html_content:
@@ -98,6 +116,18 @@ def main():
         email_body += "\n\nTPONotifier😍"
         
         send_email(subject='TPONotifier - Newly Listed Companies Today', body=email_body)
-
-if __name__ == "__main__":
-    main()
+ 
+        return {
+            'statusCode': 200,
+            'body': 'Function executed successfully!'
+        }
+    
+    else:
+        return {
+            'statusCode': 500,
+            'body': 'Failed to list companies'
+        }
+ 
+# if __name__ == "__main__":
+#     lambda_handler({}, {})
+#     main()
